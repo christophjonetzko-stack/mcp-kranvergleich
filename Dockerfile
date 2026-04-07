@@ -7,6 +7,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server_sse.py .
 
-EXPOSE 8000
+EXPOSE 10000
+
+ENV PORT=10000
 
 CMD ["python", "server_sse.py"]
