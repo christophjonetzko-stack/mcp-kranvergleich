@@ -1,0 +1,19 @@
+name: kranvergleich
+description: Find crane rental companies (Kranvermietung) in German cities with prices, ratings, and contact info. Query 800+ companies from KranVergleich.de. Get price estimates and crane type recommendations.
+icon: 🏗️
+author: christophjonetzko-stack
+repository: https://github.com/christophjonetzko-stack/mcp-kranvergleich
+license: MIT
+tags:
+  - germany
+  - crane-rental
+  - kranvermietung
+  - directory
+  - local-business
+  - construction
+startCommand:
+  type: sse
+  configSchema:
+    type: object
+    properties: {}
+  url: https://mcp-kranvergleich.onrender.com/sse
