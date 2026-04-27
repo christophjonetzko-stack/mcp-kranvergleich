@@ -10,7 +10,9 @@ Endpoint:    http://localhost:8000/sse
 import os
 import json
 import logging
+import math
 from pathlib import Path
+from collections import defaultdict
 
 # Load .env file if present (for local dev)
 _env_path = Path(__file__).parent / ".env"
@@ -52,6 +54,33 @@ CRANE_TYPES = [
     "minikran", "autokran", "dachdeckerkran", "raupenkran",
     "anhaengerkran", "mobilkran", "baukran", "ladekran",
 ]
+
+# crane_type_id (Supabase UUID) → slug. Mirrors src/data/crane-types.ts in
+# the kranvergleich frontend so MCP availability output uses the same
+# vocabulary the website does.
+CRANE_TYPE_ID_TO_SLUG = {
+    "9b9c0aa2-3f8c-4cfb-94e2-93a3f4f24d9a": "minikran",
+    "0b61b867-53a6-4cf9-afbb-50c610dc4a2a": "raupenkran",
+    "ef7ed422-402e-4553-9c01-661df28c66fc": "anhaengerkran",
+    "02dc05de-6699-4849-93fb-2b655177bfd9": "mobilkran",
+    "f1f86ce7-14b8-48ce-9004-5db8dde53949": "baukran",
+    "a556dcad-e379-4ac3-8d72-6eed094900d1": "ladekran",
+    # NOTE: kranvergleich also has autokran + dachdeckerkran but those have
+    # historically been priced/marketed without their own crane_types row —
+    # company_cranes covers minikran/raupenkran/anhaengerkran/mobilkran/
+    # baukran/ladekran (6 of 8 in the published catalog).
+}
+
+# PLZ → coords lookup, loaded once at module import. Format: list of
+# {"p":"31275","n":"Lehrte","s":"Niedersachsen","la":52.3719,"ln":9.9792}.
+_GERMAN_CITIES_PATH = Path(__file__).parent / "german-cities.json"
+try:
+    _german_cities = json.loads(_GERMAN_CITIES_PATH.read_text(encoding="utf-8"))
+    GERMAN_PLZ_COORDS = {entry["p"]: (entry["la"], entry["ln"], entry["n"]) for entry in _german_cities}
+    logger.info(f"Loaded {len(GERMAN_PLZ_COORDS)} German PLZ → coords entries")
+except FileNotFoundError:
+    logger.warning(f"german-cities.json not found at {_GERMAN_CITIES_PATH} — check_availability_by_plz will fail gracefully")
+    GERMAN_PLZ_COORDS = {}
 
 # Price data (market averages 2026)
 PRICES = {
@@ -135,6 +164,31 @@ async def list_tools():
                 "required": ["weight_tons", "height_meters"],
             },
         ),
+        Tool(
+            name="check_availability_by_plz",
+            description=(
+                "Check real-world supplier availability per crane type for a given German PLZ. "
+                "Returns, for each crane type in the catalog, the count of active suppliers "
+                "within 50 km and 100 km plus the distance to the nearest supplier. Use this "
+                "BEFORE recommending a crane type so you can prefer locally available options "
+                "when functionally equivalent — transport for a crane >100 km adds €800-1500 "
+                "to the customer's bill. Decision rule: when the functionally ideal type has "
+                "no supplier within 50 km but a substitutable type does, recommend the local "
+                "one and explain why; only expand the radius when the ideal type uses "
+                "specialty equipment that no other type can replace (e.g. Spinnenkran for "
+                "tight-access glass mounting, Raupenkran for soft terrain)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "plz": {
+                        "type": "string",
+                        "description": "5-digit German PLZ (postal code), e.g. '89584', '10115'",
+                    },
+                },
+                "required": ["plz"],
+            },
+        ),
     ]
 
 
@@ -146,6 +200,8 @@ async def call_tool(name: str, arguments: dict):
         return get_prices(arguments)
     elif name == "recommend_crane_type":
         return recommend_crane(arguments)
+    elif name == "check_availability_by_plz":
+        return await check_availability(arguments)
     return [TextContent(type="text", text="Unknown tool")]
 
 
@@ -212,6 +268,116 @@ def get_prices(args: dict):
     output += "\nAlle Preise netto zzgl. MwSt. Richtwerte basierend auf Marktdurchschnitt 2026.\n"
     output += "\n📋 Ausführliche Preisliste: [kranvergleich.de/kran-mieten-preise](https://kranvergleich.de/kran-mieten-preise)"
     return [TextContent(type="text", text=output)]
+
+
+async def check_availability(args: dict):
+    """For a given PLZ, count active suppliers per crane type within 50/100 km
+    and return the distance to the nearest supplier. Drives the bot's
+    availability-aware decision (prefer local equivalent over distant ideal).
+
+    Implementation note: counts UNIQUE companies per crane type (a single
+    multi-fleet company offering Mobilkran + Autokran is one supplier, not
+    two), and falls back from companies.lat/lng to the company's PLZ when
+    the per-firm coords are missing — same rule as the kranvergleich
+    frontend's _computeFirmMatchesFromCoords (queries.ts).
+    """
+    plz = (args.get("plz") or "").strip()
+    if not plz or len(plz) != 5 or not plz.isdigit():
+        return [TextContent(type="text", text=f"Ungültige PLZ: '{plz}'. Erwartet: 5-stellige deutsche Postleitzahl.")]
+
+    coords = GERMAN_PLZ_COORDS.get(plz)
+    if not coords:
+        return [TextContent(type="text", text=f"PLZ {plz} nicht im PLZ-Verzeichnis gefunden.")]
+    ref_lat, ref_lng, ref_city = coords
+
+    # Pull every company_cranes row + the joined company. Supabase Python
+    # client supports the same nested-select PostgREST syntax as the JS one.
+    cranes_resp = (
+        sb.table("company_cranes")
+        .select("crane_type_id, company:companies(id,is_active,is_relevant,lat,lng,zip)")
+        .execute()
+    )
+    rows = cranes_resp.data or []
+
+    # Group by crane_type_id → set of (company_id, distance_km)
+    per_type: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for row in rows:
+        company = row.get("company")
+        if not company:
+            continue
+        if not (company.get("is_active") and company.get("is_relevant")):
+            continue
+
+        # Resolve the firm's coords. Per-firm lat/lng wins; otherwise look up
+        # the firm's zip in GERMAN_PLZ_COORDS (covers the small tail of firms
+        # whose enrichment pipeline didn't write coords).
+        lat = company.get("lat")
+        lng = company.get("lng")
+        if lat is None or lng is None:
+            firm_zip = (company.get("zip") or "").strip()
+            fallback = GERMAN_PLZ_COORDS.get(firm_zip)
+            if fallback:
+                lat, lng, _ = fallback
+        if lat is None or lng is None:
+            continue
+
+        dist = _haversine_km(ref_lat, ref_lng, float(lat), float(lng))
+        per_type[row["crane_type_id"]].append((company["id"], dist))
+
+    # Build the German-language report — Claude will read this verbatim and
+    # cite numbers in its reply, so prefer integers + crisp formatting.
+    lines = [
+        f"## Verfügbarkeit für PLZ {plz} ({ref_city})",
+        "",
+        "| Krantyp | Anbieter ≤ 50 km | Anbieter ≤ 100 km | nächster Anbieter |",
+        "|---------|-----------------:|------------------:|------------------:|",
+    ]
+    # Iterate in CRANE_TYPES order so the table is stable across calls.
+    type_id_lookup = {slug: tid for tid, slug in CRANE_TYPE_ID_TO_SLUG.items()}
+    for slug in CRANE_TYPES:
+        tid = type_id_lookup.get(slug)
+        if not tid:
+            # Type isn't represented in the company_cranes table (e.g.
+            # autokran historically captured under mobilkran in this catalog).
+            lines.append(f"| {slug} | n/v | n/v | n/v |")
+            continue
+        entries = per_type.get(tid, [])
+        # Dedupe by company_id (a firm with multiple branches still counts once
+        # for the type). Take the smallest distance per firm.
+        by_firm: dict[str, float] = {}
+        for cid, d in entries:
+            prev = by_firm.get(cid)
+            if prev is None or d < prev:
+                by_firm[cid] = d
+        distances = sorted(by_firm.values())
+        in_50 = sum(1 for d in distances if d <= 50)
+        in_100 = sum(1 for d in distances if d <= 100)
+        nearest = f"{distances[0]:.0f} km" if distances else "—"
+        lines.append(f"| {slug} | {in_50} | {in_100} | {nearest} |")
+
+    lines += [
+        "",
+        "**Entscheidungsregel:** Bevorzuge einen lokal verfügbaren Krantyp (≤ 50 km), "
+        "auch wenn er nicht der funktional ideale ist — solange er den konkreten "
+        "Anwendungsfall (Tragkraft + Höhe + Zufahrt) abdeckt. Ein Krantransport "
+        "über 100 km kostet 800-1500 € extra. Nur wenn Spezialausrüstung wirklich "
+        "nötig ist (z.B. Spinnenkran für enge Glasmontage, Raupenkran für weiches "
+        "Gelände), den idealen Typ im größeren Radius empfehlen und auf Transport "
+        "hinweisen.",
+    ]
+    return [TextContent(type="text", text="\n".join(lines))]
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Great-circle distance in km. Same formula the kranvergleich frontend
+    uses for the firm-matching pipeline; identical results = consistent UX."""
+    R = 6371.0
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 def recommend_crane(args: dict):
