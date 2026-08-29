@@ -9,8 +9,12 @@ Endpoint:    http://localhost:8000/sse
 
 import os
 import json
+import asyncio
+import contextlib
+import hashlib
 import logging
 import math
+import time
 from pathlib import Path
 from collections import defaultdict
 
@@ -25,6 +29,7 @@ if _env_path.exists():
 
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import Tool, TextContent
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
@@ -208,17 +213,114 @@ async def list_tools():
     ]
 
 
+KNOWN_TOOLS = {
+    "find_crane_rental_companies",
+    "get_crane_rental_prices",
+    "recommend_crane_type",
+    "check_availability_by_plz",
+}
+
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
+    started = time.monotonic()
+    arguments = arguments or {}
     if name == "find_crane_rental_companies":
-        return await find_companies(arguments)
+        result = await find_companies(arguments)
     elif name == "get_crane_rental_prices":
-        return get_prices(arguments)
+        result = get_prices(arguments)
     elif name == "recommend_crane_type":
-        return recommend_crane(arguments)
+        result = recommend_crane(arguments)
     elif name == "check_availability_by_plz":
-        return await check_availability(arguments)
-    return [TextContent(type="text", text="Unknown tool")]
+        result = await check_availability(arguments)
+    else:
+        return [TextContent(type="text", text="Unknown tool")]
+    _schedule_event_log(name, arguments, result, int((time.monotonic() - started) * 1000))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Call logging -> public.mcp_events (mig 079). Anon key, INSERT-only policy.
+# No IP, no free text: the task string becomes a boolean. Never raises.
+# ---------------------------------------------------------------------------
+
+def _num(v, lo, hi):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if lo <= f <= hi else None
+
+
+def _clip(v, n):
+    if v is None:
+        return None
+    v = str(v).strip()
+    return v[:n] if v else None
+
+
+def _build_event(name: str, args: dict, result, duration_ms: int) -> dict:
+    ctx = None
+    with contextlib.suppress(LookupError):
+        ctx = server.request_context
+    client_name = client_version = session_hash = None
+    transport = "sse"
+    if ctx is not None:
+        params = getattr(ctx.session, "client_params", None)
+        info = getattr(params, "clientInfo", None) if params else None
+        if info is not None:
+            client_name = _clip(getattr(info, "name", None), 64)
+            client_version = _clip(getattr(info, "version", None), 32)
+        # The streamable transport exposes the HTTP request on the context;
+        # the SSE transport does not.
+        if getattr(ctx, "request", None) is not None:
+            transport = "streamable-http"
+        session_hash = hashlib.sha256(str(id(ctx.session)).encode()).hexdigest()[:12]
+
+    text = "".join(getattr(c, "text", "") for c in (result or []))
+    result_count = None
+    if name == "find_crane_rental_companies":
+        result_count = text.count("/anbieter/")
+
+    plz = _clip(args.get("plz"), 5)
+    if plz is not None and not (plz.isdigit() and 4 <= len(plz) <= 5):
+        plz = None
+    crane_type = _clip(args.get("crane_type"), 32)
+    if crane_type is not None and crane_type not in CRANE_TYPES:
+        crane_type = None
+
+    return {
+        "tool": name,
+        "transport": transport,
+        "city": _clip(args.get("city"), 64),
+        "crane_type": crane_type,
+        "plz": plz,
+        "weight_t": _num(args.get("weight_tons"), 0, 999999),
+        "height_m": _num(args.get("height_meters"), 0, 99999),
+        "has_task": bool((args.get("task") or "").strip()) if name == "recommend_crane_type" else None,
+        "result_count": result_count,
+        "duration_ms": max(0, min(duration_ms, 600000)),
+        "client_name": client_name,
+        "client_version": client_version,
+        "session_hash": session_hash,
+    }
+
+
+def _insert_event(row: dict) -> None:
+    try:
+        sb.table("mcp_events").insert(row).execute()
+    except Exception as exc:  # logging must never affect the tool response
+        logger.warning(f"mcp_events insert failed: {exc}")
+
+
+def _schedule_event_log(name: str, args: dict, result, duration_ms: int) -> None:
+    if name not in KNOWN_TOOLS:
+        return
+    try:
+        row = _build_event(name, args, result, duration_ms)
+        asyncio.get_running_loop().create_task(asyncio.to_thread(_insert_event, row))
+    except Exception as exc:
+        logger.warning(f"mcp_events scheduling failed: {exc}")
 
 
 async def find_companies(args: dict):
@@ -447,10 +549,14 @@ def recommend_crane(args: dict):
 
 
 # ---------------------------------------------------------------------------
-# SSE Transport + Starlette app
+# Transports: legacy HTTP+SSE (/sse + /messages/) and Streamable HTTP (/mcp)
 # ---------------------------------------------------------------------------
 
 sse = SseServerTransport("/messages/")
+
+# Stateless: every request is self-contained, which suits a free Render
+# instance that spins down (no in-memory session to lose).
+session_manager = StreamableHTTPSessionManager(app=server, json_response=False, stateless=True)
 
 
 async def handle_sse(request):
@@ -462,8 +568,22 @@ async def handle_sse(request):
     return Response()
 
 
+async def handle_streamable_http(scope, receive, send):
+    await session_manager.handle_request(scope, receive, send)
+
+
 async def health(request):
-    return JSONResponse({"status": "ok", "server": "kranvergleich-mcp", "transport": "sse"})
+    return JSONResponse({
+        "status": "ok",
+        "server": "kranvergleich-mcp",
+        "transports": {"sse": "/sse", "streamable-http": "/mcp"},
+    })
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app):
+    async with session_manager.run():
+        yield
 
 
 app = Starlette(
@@ -472,9 +592,11 @@ app = Starlette(
         Route("/health", health),
         Route("/sse", handle_sse),
         Mount("/messages", app=sse.handle_post_message),
+        Mount("/mcp", app=handle_streamable_http),
     ],
+    lifespan=lifespan,
 )
 
 if __name__ == "__main__":
-    logger.info(f"Starting KranVergleich MCP server (SSE) on port {PORT}")
+    logger.info(f"Starting KranVergleich MCP server on port {PORT} (SSE /sse, Streamable HTTP /mcp)")
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
