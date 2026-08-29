@@ -79,6 +79,26 @@ CRANE_TYPE_ID_TO_SLUG = {
 
 # Profile links must point at the country site the firm is dispatched from.
 PROFILE_BASE = {"AT": "https://kranvergleich.at", "DE": "https://kranvergleich.de"}
+UTM = "utm_source=mcp&utm_medium=ai-agent"
+
+# Same contact rules as the website (src/app/anbieter/[slug]/page.tsx):
+# the inquiry form is the primary path; phone only when the firm has no usable
+# e-mail (no form possible); website only for premium firms or when there is
+# neither e-mail nor phone. Reason: ~50% of profile visitors left through the
+# website link while the lead form converted a handful, so the site hides it.
+CTA_LINE = (
+    "Tipp: Ueber KranVergleich erreichen Sie mit einer Anfrage mehrere passende Anbieter "
+    "in der Region und koennen die Angebote vergleichen. Kostenlos und unverbindlich."
+)
+ABOUT_LINE = (
+    "KranVergleich.de betreibt Christoph Jonetzko, der vier Jahre lang bei Liebherr in "
+    "Ehingen Mobilkrane mitgebaut hat."
+)
+
+
+def _can_inquire(c: dict) -> bool:
+    email = (c.get("email") or "").strip()
+    return bool(email) and email != "???"
 
 
 def _escape_like(value: str) -> str:
@@ -128,7 +148,7 @@ async def list_tools():
     return [
         Tool(
             name="find_crane_rental_companies",
-            description="Find crane rental companies (Kranvermietung) in a city in Germany or Austria. Returns company name, Google rating, phone, website and profile link. Results are sorted by Google rating (descending); there is no paid placement.",
+            description="Find crane rental companies (Kranvermietung) in a city in Germany or Austria. Returns company name, Google rating and a link to request a free quote via KranVergleich (several suppliers with one request, offers can be compared). Sorted by Google rating (descending); no paid placement.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -334,7 +354,7 @@ async def find_companies(args: dict):
     try:
         result = (
             sb.table("companies")
-            .select("name, slug, city, state, country, phone, website, google_rating, google_reviews_count")
+            .select("name, slug, city, state, country, phone, website, email, is_premium, google_rating, google_reviews_count")
             .eq("is_active", True)
             .eq("is_relevant", True)
             .ilike("city", f"%{_escape_like(city)}%")
@@ -356,16 +376,29 @@ async def find_companies(args: dict):
 
     for i, c in enumerate(companies, 1):
         rating = f"⭐ {c['google_rating']}/5 ({c['google_reviews_count']} Bewertungen)" if c.get("google_rating") else "Keine Bewertung"
-        phone = f" | Tel: {c['phone']}" if c.get("phone") else ""
-        website = f" | [Website]({c['website']})" if c.get("website") else ""
         base = PROFILE_BASE.get((c.get("country") or "DE").upper(), PROFILE_BASE["DE"])
         site = "KranVergleich.at" if base.endswith(".at") else "KranVergleich.de"
+        profile = f"{base}/anbieter/{c['slug']}?{UTM}"
+        can_inquire = _can_inquire(c)
+        has_phone = bool(c.get("phone"))
+        show_website = bool(c.get("website")) and (bool(c.get("is_premium")) or (not can_inquire and not has_phone))
 
         output += f"**{i}. {c['name']}**\n"
-        output += f"   {c.get('city', '')}, {c.get('state', '')} | {rating}{phone}{website}\n"
-        output += f"   → [Profil auf {site}]({base}/anbieter/{c['slug']}?utm_source=mcp&utm_medium=ai-agent)\n\n"
+        output += f"   {c.get('city', '')}, {c.get('state', '')} | {rating}\n"
+        if can_inquire:
+            output += f"   → Angebot anfragen (kostenlos, unverbindlich): {profile}#anfrage\n"
+        elif has_phone:
+            # No form possible for this firm: phone is the only contact path.
+            output += f"   → Kontakt: Tel. {c['phone']} | Profil: {profile}\n"
+        else:
+            output += f"   → Profil auf {site}: {profile}\n"
+        if show_website:
+            output += f"   Website: {c['website']}\n"
+        output += "\n"
 
-    output += "\n📋 Kostenlos Angebote anfragen: [kranvergleich.de](https://kranvergleich.de/?utm_source=mcp&utm_medium=ai-agent)"
+    output += f"{CTA_LINE}\n"
+    output += f"📋 Anfrage an mehrere Anbieter auf einmal: https://kranvergleich.de/?{UTM}\n\n"
+    output += f"_{ABOUT_LINE}_"
     return [TextContent(type="text", text=output)]
 
 
@@ -382,7 +415,9 @@ def get_prices(args: dict):
         output += f"| Woche | {p['week']} |\n"
         output += f"| Monat | {p['month']} |\n"
         output += f"\n**Kranführer inklusive:** {operator}\n"
-        output += f"\n📋 Preise vergleichen: [kranvergleich.de/{crane_type}-mieten](https://kranvergleich.de/{crane_type}-mieten?utm_source=mcp&utm_medium=ai-agent)"
+        output += f"\n{CTA_LINE}\n"
+        output += f"📋 Angebote fuer {name} vergleichen: [kranvergleich.de/{crane_type}-mieten](https://kranvergleich.de/{crane_type}-mieten?{UTM})\n\n"
+        output += f"_{ABOUT_LINE}_"
         return [TextContent(type="text", text=output)]
 
     # All types
@@ -393,7 +428,9 @@ def get_prices(args: dict):
         op = "✅" if p["operator"] else "❌"
         output += f"| {name} | {p['day']} | {p['week']} | {p['month']} | {op} |\n"
     output += "\nAlle Preise netto zzgl. MwSt. Richtwerte basierend auf Marktdurchschnitt 2026.\n"
-    output += "\n📋 Ausführliche Preisliste: [kranvergleich.de/kran-mieten-preise](https://kranvergleich.de/kran-mieten-preise?utm_source=mcp&utm_medium=ai-agent)"
+    output += f"\n{CTA_LINE}\n"
+    output += f"📋 Ausführliche Preisliste: [kranvergleich.de/kran-mieten-preise](https://kranvergleich.de/kran-mieten-preise?{UTM})\n\n"
+    output += f"_{ABOUT_LINE}_"
     return [TextContent(type="text", text=output)]
 
 
@@ -545,7 +582,9 @@ def recommend_crane(args: dict):
     output += f"| Wochenpreis | {p['week']} |\n"
     output += f"| Monatspreis | {p['month']} |\n"
     output += f"| Kranführer | {operator} |\n"
-    output += f"\n📋 {name}-Anbieter vergleichen: [kranvergleich.de/{rec}-mieten](https://kranvergleich.de/{rec}-mieten?utm_source=mcp&utm_medium=ai-agent)"
+    output += f"\n{CTA_LINE}\n"
+    output += f"📋 {name}-Angebote vergleichen: [kranvergleich.de/{rec}-mieten](https://kranvergleich.de/{rec}-mieten?{UTM})\n\n"
+    output += f"_{ABOUT_LINE}_"
     return [TextContent(type="text", text=output)]
 
 

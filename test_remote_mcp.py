@@ -28,7 +28,7 @@ BASE = os.environ.get("MCP_BASE", "https://mcp-kranvergleich.onrender.com").rstr
 CLIENT_INFO = Implementation(name="kranvergleich-smoke-test", version="2026.08.29")
 
 CASES = [
-    ("find_crane_rental_companies", {"city": "Berlin", "limit": 3}, ["Profil auf KranVergleich.de", "?utm_source=mcp&utm_medium=ai-agent", "Sortiert nach"]),
+    ("find_crane_rental_companies", {"city": "Berlin", "limit": 3}, ["kranvergleich.de/anbieter/", "?utm_source=mcp&utm_medium=ai-agent", "Sortiert nach", "Angebote vergleichen", "Christoph Jonetzko"]),
     ("find_crane_rental_companies", {"city": "Wien", "limit": 2}, ["kranvergleich.at/anbieter/"]),
     ("find_crane_rental_companies", {"city": "%", "limit": 2}, ["mindestens 2 Zeichen"]),
     ("find_crane_rental_companies", {"city": "%%", "limit": 2}, ["Keine Kranvermietungen"]),  # wildcard escaped
