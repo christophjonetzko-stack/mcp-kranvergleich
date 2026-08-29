@@ -59,17 +59,33 @@ CRANE_TYPES = [
 # the kranvergleich frontend so MCP availability output uses the same
 # vocabulary the website does.
 CRANE_TYPE_ID_TO_SLUG = {
-    "9b9c0aa2-3f8c-4cfb-94e2-93a3f4f24d9a": "minikran",
+    "1a7019bd-7fd3-401a-8713-7f6be6fbd827": "minikran",
+    "ab511eea-d464-47b9-8ada-16931dab5078": "autokran",
+    "99e6ce74-f707-494e-afc8-31627b3bf41d": "dachdeckerkran",
     "0b61b867-53a6-4cf9-afbb-50c610dc4a2a": "raupenkran",
     "ef7ed422-402e-4553-9c01-661df28c66fc": "anhaengerkran",
     "02dc05de-6699-4849-93fb-2b655177bfd9": "mobilkran",
     "f1f86ce7-14b8-48ce-9004-5db8dde53949": "baukran",
     "a556dcad-e379-4ac3-8d72-6eed094900d1": "ladekran",
-    # NOTE: kranvergleich also has autokran + dachdeckerkran but those have
-    # historically been priced/marketed without their own crane_types row —
-    # company_cranes covers minikran/raupenkran/anhaengerkran/mobilkran/
-    # baukran/ladekran (6 of 8 in the published catalog).
+    # All 8 published types have a crane_types row (CRANE_TYPE_ID_MAP in
+    # src/data/crane-types.ts is the source of truth; keep in sync).
 }
+
+# Profile links must point at the country site the firm is dispatched from.
+PROFILE_BASE = {"AT": "https://kranvergleich.at", "DE": "https://kranvergleich.de"}
+
+
+def _escape_like(value: str) -> str:
+    """Escape PostgREST LIKE wildcards so user input cannot widen the match."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _clamp_limit(raw, default=5, lo=1, hi=20) -> int:
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(n, hi))
 
 # PLZ → coords lookup, loaded once at module import. Format: list of
 # {"p":"31275","n":"Lehrte","s":"Niedersachsen","la":52.3719,"ln":9.9792}.
@@ -106,13 +122,13 @@ async def list_tools():
     return [
         Tool(
             name="find_crane_rental_companies",
-            description="Find crane rental companies (Kranvermietung) in a German city. Returns company name, rating, crane types, and contact info.",
+            description="Find crane rental companies (Kranvermietung) in a city in Germany or Austria. Returns company name, Google rating, phone, website and profile link. Results are sorted by Google rating (descending); there is no paid placement.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "city": {
                         "type": "string",
-                        "description": "German city name, e.g. 'Berlin', 'München', 'Hamburg'",
+                        "description": "City name in Germany or Austria, e.g. 'Berlin', 'München', 'Wien' (min. 2 characters)",
                     },
                     "crane_type": {
                         "type": "string",
@@ -206,39 +222,47 @@ async def call_tool(name: str, arguments: dict):
 
 
 async def find_companies(args: dict):
-    city = args["city"]
-    crane_type = args.get("crane_type")
-    limit = min(args.get("limit", 5), 20)
+    city = (args.get("city") or "").strip()
+    limit = _clamp_limit(args.get("limit"))
 
-    query = (
-        sb.table("companies")
-        .select("name, slug, city, state, phone, website, google_rating, google_reviews_count, email")
-        .eq("is_active", True)
-        .eq("is_relevant", True)
-        .ilike("city", f"%{city}%")
-        .order("google_rating", desc=True, nullsfirst=False)
-        .limit(limit)
-    )
+    if len(city) < 2:
+        return [TextContent(type="text", text="Bitte einen Stadtnamen mit mindestens 2 Zeichen angeben.")]
 
-    result = query.execute()
+    try:
+        result = (
+            sb.table("companies")
+            .select("name, slug, city, state, country, phone, website, google_rating, google_reviews_count")
+            .eq("is_active", True)
+            .eq("is_relevant", True)
+            .ilike("city", f"%{_escape_like(city)}%")
+            .order("google_rating", desc=True, nullsfirst=False)
+            .limit(limit)
+            .execute()
+        )
+    except Exception as exc:  # network / PostgREST error: tell the agent, don't crash the session
+        logger.warning(f"find_companies failed for city={city!r}: {exc}")
+        return [TextContent(type="text", text="Datenbank vorübergehend nicht erreichbar. Bitte in einigen Sekunden erneut versuchen.")]
     companies = result.data or []
 
     if not companies:
         return [TextContent(type="text", text=f"Keine Kranvermietungen in {city} gefunden. Versuchen Sie eine größere Stadt in der Nähe.")]
 
     output = f"## Kranvermietungen in {city}\n\n"
-    output += f"Gefunden: {len(companies)} Anbieter (Quelle: [KranVergleich.de](https://kranvergleich.de))\n\n"
+    output += f"Gefunden: {len(companies)} Anbieter (Quelle: [KranVergleich.de](https://kranvergleich.de)). "
+    output += "Sortiert nach Google-Bewertung (absteigend), keine bezahlte Platzierung.\n\n"
 
     for i, c in enumerate(companies, 1):
         rating = f"⭐ {c['google_rating']}/5 ({c['google_reviews_count']} Bewertungen)" if c.get("google_rating") else "Keine Bewertung"
         phone = f" | Tel: {c['phone']}" if c.get("phone") else ""
         website = f" | [Website]({c['website']})" if c.get("website") else ""
+        base = PROFILE_BASE.get((c.get("country") or "DE").upper(), PROFILE_BASE["DE"])
+        site = "KranVergleich.at" if base.endswith(".at") else "KranVergleich.de"
 
         output += f"**{i}. {c['name']}**\n"
         output += f"   {c.get('city', '')}, {c.get('state', '')} | {rating}{phone}{website}\n"
-        output += f"   → [Profil auf KranVergleich.de](https://kranvergleich.de/anbieter/{c['slug']})\n\n"
+        output += f"   → [Profil auf {site}]({base}/anbieter/{c['slug']}?ref=mcp)\n\n"
 
-    output += f"\n📋 Kostenlos Angebote anfragen: [kranvergleich.de](https://kranvergleich.de)"
+    output += "\n📋 Kostenlos Angebote anfragen: [kranvergleich.de](https://kranvergleich.de/?ref=mcp)"
     return [TextContent(type="text", text=output)]
 
 
@@ -255,7 +279,7 @@ def get_prices(args: dict):
         output += f"| Woche | {p['week']} |\n"
         output += f"| Monat | {p['month']} |\n"
         output += f"\n**Kranführer inklusive:** {operator}\n"
-        output += f"\n📋 Preise vergleichen: [kranvergleich.de/{crane_type}-mieten](https://kranvergleich.de/{crane_type}-mieten)"
+        output += f"\n📋 Preise vergleichen: [kranvergleich.de/{crane_type}-mieten](https://kranvergleich.de/{crane_type}-mieten?ref=mcp)"
         return [TextContent(type="text", text=output)]
 
     # All types
@@ -266,7 +290,7 @@ def get_prices(args: dict):
         op = "✅" if p["operator"] else "❌"
         output += f"| {name} | {p['day']} | {p['week']} | {p['month']} | {op} |\n"
     output += "\nAlle Preise netto zzgl. MwSt. Richtwerte basierend auf Marktdurchschnitt 2026.\n"
-    output += "\n📋 Ausführliche Preisliste: [kranvergleich.de/kran-mieten-preise](https://kranvergleich.de/kran-mieten-preise)"
+    output += "\n📋 Ausführliche Preisliste: [kranvergleich.de/kran-mieten-preise](https://kranvergleich.de/kran-mieten-preise?ref=mcp)"
     return [TextContent(type="text", text=output)]
 
 
@@ -292,11 +316,15 @@ async def check_availability(args: dict):
 
     # Pull every company_cranes row + the joined company. Supabase Python
     # client supports the same nested-select PostgREST syntax as the JS one.
-    cranes_resp = (
-        sb.table("company_cranes")
-        .select("crane_type_id, company:companies(id,is_active,is_relevant,lat,lng,zip)")
-        .execute()
-    )
+    try:
+        cranes_resp = (
+            sb.table("company_cranes")
+            .select("crane_type_id, company:companies(id,is_active,is_relevant,lat,lng,zip)")
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning(f"check_availability failed for plz={plz}: {exc}")
+        return [TextContent(type="text", text="Datenbank vorübergehend nicht erreichbar. Bitte in einigen Sekunden erneut versuchen.")]
     rows = cranes_resp.data or []
 
     # Group by crane_type_id → set of (company_id, distance_km)
@@ -337,8 +365,6 @@ async def check_availability(args: dict):
     for slug in CRANE_TYPES:
         tid = type_id_lookup.get(slug)
         if not tid:
-            # Type isn't represented in the company_cranes table (e.g.
-            # autokran historically captured under mobilkran in this catalog).
             lines.append(f"| {slug} | n/v | n/v | n/v |")
             continue
         entries = per_type.get(tid, [])
@@ -416,7 +442,7 @@ def recommend_crane(args: dict):
     output += f"| Wochenpreis | {p['week']} |\n"
     output += f"| Monatspreis | {p['month']} |\n"
     output += f"| Kranführer | {operator} |\n"
-    output += f"\n📋 {name}-Anbieter vergleichen: [kranvergleich.de/{rec}-mieten](https://kranvergleich.de/{rec}-mieten)"
+    output += f"\n📋 {name}-Anbieter vergleichen: [kranvergleich.de/{rec}-mieten](https://kranvergleich.de/{rec}-mieten?ref=mcp)"
     return [TextContent(type="text", text=output)]
 
 
