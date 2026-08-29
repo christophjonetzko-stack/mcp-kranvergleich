@@ -28,7 +28,7 @@ from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from supabase import create_client
 import uvicorn
 
@@ -457,6 +457,9 @@ async def handle_sse(request):
     logger.info(f"New SSE connection from {request.client.host}")
     async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
         await server.run(streams[0], streams[1], server.create_initialization_options())
+    # Starlette >= 0.4x awaits the handler's return value; None raises TypeError
+    # after the client disconnects (noise in the logs, not a functional bug).
+    return Response()
 
 
 async def health(request):
