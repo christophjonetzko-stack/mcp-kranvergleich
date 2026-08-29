@@ -409,7 +409,7 @@ def get_prices(args: dict):
         p = PRICES[crane_type]
         name = crane_type.replace("ae", "ä").capitalize()
         operator = "Ja, im Preis enthalten" if p["operator"] else "Nein, Selbstbedienung nach Einweisung"
-        output = f"## {name} mieten — Kosten 2026\n\n"
+        output = f"## {name} mieten: Kosten 2026\n\n"
         output += "| Zeitraum | Preis |\n|---|---|\n"
         output += f"| Tag | {p['day']} |\n"
         output += f"| Woche | {p['week']} |\n"
@@ -421,7 +421,7 @@ def get_prices(args: dict):
         return [TextContent(type="text", text=output)]
 
     # All types
-    output = "## Kran mieten — Preisübersicht 2026\n\n"
+    output = "## Kran mieten: Preisübersicht 2026\n\n"
     output += "| Krantyp | Tag | Woche | Monat | Kranführer |\n|---|---|---|---|---|\n"
     for ct, p in PRICES.items():
         name = ct.replace("ae", "ä").capitalize()
@@ -518,13 +518,13 @@ async def check_availability(args: dict):
         distances = sorted(by_firm.values())
         in_50 = sum(1 for d in distances if d <= 50)
         in_100 = sum(1 for d in distances if d <= 100)
-        nearest = f"{distances[0]:.0f} km" if distances else "—"
+        nearest = f"{distances[0]:.0f} km" if distances else "-"
         lines.append(f"| {slug} | {in_50} | {in_100} | {nearest} |")
 
     lines += [
         "",
         "**Entscheidungsregel:** Bevorzuge einen lokal verfügbaren Krantyp (≤ 50 km), "
-        "auch wenn er nicht der funktional ideale ist — solange er den konkreten "
+        "auch wenn er nicht der funktional ideale ist, solange er den konkreten "
         "Anwendungsfall (Tragkraft + Höhe + Zufahrt) abdeckt. Ein Krantransport "
         "über 100 km kostet 800-1500 € extra. Nur wenn Spezialausrüstung wirklich "
         "nötig ist (z.B. Spinnenkran für enge Glasmontage, Raupenkran für weiches "
@@ -553,13 +553,13 @@ def recommend_crane(args: dict):
 
     # Decision tree
     if "dach" in task and weight <= 1 and height <= 25:
-        rec, reason = "dachdeckerkran", "Optimal für Dacharbeiten — schneller Aufbau, kein Kranführerschein nötig."
+        rec, reason = "dachdeckerkran", "Optimal für Dacharbeiten: schneller Aufbau, Bedienung nach Einweisung."
     elif "glas" in task and weight <= 3:
-        rec, reason = "minikran", "Minikran mit Glassauger — ideal für Glasmontage und Fassadenarbeiten."
+        rec, reason = "minikran", "Minikran mit Glassauger, ideal für Glasmontage und Fassadenarbeiten."
     elif weight <= 0.5 and height <= 10:
-        rec, reason = "anhaengerkran", "Günstigste Option für leichte Lasten — transportierbar mit PKW."
+        rec, reason = "anhaengerkran", "Günstigste Option für leichte Lasten, transportierbar mit PKW-Anhängerkupplung."
     elif weight <= 3 and height <= 18:
-        rec, reason = "minikran", "Kompakt und flexibel — passt durch enge Zufahrten ab 80 cm Breite."
+        rec, reason = "minikran", "Kompakt und flexibel, passt durch enge Zufahrten."
     elif weight <= 20 and height <= 30:
         rec, reason = "autokran", "Vielseitig einsetzbar, schnell vor Ort, Kranführer inklusive."
     elif weight <= 50 and height <= 40:
