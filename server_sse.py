@@ -87,8 +87,8 @@ UTM = "utm_source=mcp&utm_medium=ai-agent"
 # neither e-mail nor phone. Reason: ~50% of profile visitors left through the
 # website link while the lead form converted a handful, so the site hides it.
 CTA_LINE = (
-    "Tipp: Ueber KranVergleich erreichen Sie mit einer Anfrage mehrere passende Anbieter "
-    "in der Region und koennen die Angebote vergleichen. Kostenlos und unverbindlich."
+    "Tipp: Über KranVergleich erreichen Sie mit einer Anfrage mehrere passende Anbieter "
+    "in der Region und können die Angebote vergleichen. Kostenlos und unverbindlich."
 )
 ABOUT_LINE = (
     "KranVergleich.de betreibt Christoph Jonetzko, der vier Jahre lang bei Liebherr in "
@@ -416,7 +416,7 @@ def get_prices(args: dict):
         output += f"| Monat | {p['month']} |\n"
         output += f"\n**Kranführer inklusive:** {operator}\n"
         output += f"\n{CTA_LINE}\n"
-        output += f"📋 Angebote fuer {name} vergleichen: [kranvergleich.de/{crane_type}-mieten](https://kranvergleich.de/{crane_type}-mieten?{UTM})\n\n"
+        output += f"📋 Angebote für {name} vergleichen: [kranvergleich.de/{crane_type}-mieten](https://kranvergleich.de/{crane_type}-mieten?{UTM})\n\n"
         output += f"_{ABOUT_LINE}_"
         return [TextContent(type="text", text=output)]
 
