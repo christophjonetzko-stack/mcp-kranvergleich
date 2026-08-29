@@ -21,11 +21,11 @@ from mcp.client.sse import sse_client
 URL = os.environ.get("MCP_URL", "https://mcp-kranvergleich.onrender.com/sse")
 
 CASES = [
-    ("find_crane_rental_companies", {"city": "Berlin", "limit": 3}, ["Profil auf KranVergleich.de", "?ref=mcp", "Sortiert nach"]),
+    ("find_crane_rental_companies", {"city": "Berlin", "limit": 3}, ["Profil auf KranVergleich.de", "?utm_source=mcp&utm_medium=ai-agent", "Sortiert nach"]),
     ("find_crane_rental_companies", {"city": "Wien", "limit": 2}, ["kranvergleich.at/anbieter/"]),
     ("find_crane_rental_companies", {"city": "%", "limit": 2}, ["mindestens 2 Zeichen"]),
     ("find_crane_rental_companies", {"city": "%%", "limit": 2}, ["Keine Kranvermietungen"]),  # wildcard escaped
-    ("get_crane_rental_prices", {"crane_type": "autokran"}, ["500–2.000€", "?ref=mcp"]),
+    ("get_crane_rental_prices", {"crane_type": "autokran"}, ["500–2.000€", "?utm_source=mcp&utm_medium=ai-agent"]),
     ("recommend_crane_type", {"weight_tons": 2.8, "height_meters": 12, "task": "Sauna"}, ["Empfehlung"]),
     ("check_availability_by_plz", {"plz": "89584"}, ["Verfügbarkeit für PLZ 89584", "| minikran |", "| autokran |"]),
 ]

@@ -260,9 +260,9 @@ async def find_companies(args: dict):
 
         output += f"**{i}. {c['name']}**\n"
         output += f"   {c.get('city', '')}, {c.get('state', '')} | {rating}{phone}{website}\n"
-        output += f"   → [Profil auf {site}]({base}/anbieter/{c['slug']}?ref=mcp)\n\n"
+        output += f"   → [Profil auf {site}]({base}/anbieter/{c['slug']}?utm_source=mcp&utm_medium=ai-agent)\n\n"
 
-    output += "\n📋 Kostenlos Angebote anfragen: [kranvergleich.de](https://kranvergleich.de/?ref=mcp)"
+    output += "\n📋 Kostenlos Angebote anfragen: [kranvergleich.de](https://kranvergleich.de/?utm_source=mcp&utm_medium=ai-agent)"
     return [TextContent(type="text", text=output)]
 
 
@@ -279,7 +279,7 @@ def get_prices(args: dict):
         output += f"| Woche | {p['week']} |\n"
         output += f"| Monat | {p['month']} |\n"
         output += f"\n**Kranführer inklusive:** {operator}\n"
-        output += f"\n📋 Preise vergleichen: [kranvergleich.de/{crane_type}-mieten](https://kranvergleich.de/{crane_type}-mieten?ref=mcp)"
+        output += f"\n📋 Preise vergleichen: [kranvergleich.de/{crane_type}-mieten](https://kranvergleich.de/{crane_type}-mieten?utm_source=mcp&utm_medium=ai-agent)"
         return [TextContent(type="text", text=output)]
 
     # All types
@@ -290,7 +290,7 @@ def get_prices(args: dict):
         op = "✅" if p["operator"] else "❌"
         output += f"| {name} | {p['day']} | {p['week']} | {p['month']} | {op} |\n"
     output += "\nAlle Preise netto zzgl. MwSt. Richtwerte basierend auf Marktdurchschnitt 2026.\n"
-    output += "\n📋 Ausführliche Preisliste: [kranvergleich.de/kran-mieten-preise](https://kranvergleich.de/kran-mieten-preise?ref=mcp)"
+    output += "\n📋 Ausführliche Preisliste: [kranvergleich.de/kran-mieten-preise](https://kranvergleich.de/kran-mieten-preise?utm_source=mcp&utm_medium=ai-agent)"
     return [TextContent(type="text", text=output)]
 
 
@@ -442,7 +442,7 @@ def recommend_crane(args: dict):
     output += f"| Wochenpreis | {p['week']} |\n"
     output += f"| Monatspreis | {p['month']} |\n"
     output += f"| Kranführer | {operator} |\n"
-    output += f"\n📋 {name}-Anbieter vergleichen: [kranvergleich.de/{rec}-mieten](https://kranvergleich.de/{rec}-mieten?ref=mcp)"
+    output += f"\n📋 {name}-Anbieter vergleichen: [kranvergleich.de/{rec}-mieten](https://kranvergleich.de/{rec}-mieten?utm_source=mcp&utm_medium=ai-agent)"
     return [TextContent(type="text", text=output)]
 
 
