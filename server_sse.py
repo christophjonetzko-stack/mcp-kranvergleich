@@ -555,9 +555,10 @@ def recommend_crane(args: dict):
 
 sse = SseServerTransport("/messages/")
 
-# Stateless: every request is self-contained, which suits a free Render
-# instance that spins down (no in-memory session to lose).
-session_manager = StreamableHTTPSessionManager(app=server, json_response=False, stateless=True)
+# Stateful: the session keeps the initialize handshake, so call logging sees
+# clientInfo. Sessions live in memory (single Render instance; a spin-down just
+# forces clients to re-initialize).
+session_manager = StreamableHTTPSessionManager(app=server, json_response=False, stateless=False)
 
 
 async def handle_sse(request):
