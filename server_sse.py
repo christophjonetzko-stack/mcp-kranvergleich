@@ -35,6 +35,7 @@ from starlette.applications import Starlette
 from starlette.routing import Mount, Route
 from starlette.responses import JSONResponse, Response
 from supabase import create_client
+from postgrest import ReturnMethod
 import uvicorn
 
 # ---------------------------------------------------------------------------
@@ -308,7 +309,7 @@ def _build_event(name: str, args: dict, result, duration_ms: int) -> dict:
 
 def _insert_event(row: dict) -> None:
     try:
-        sb.table("mcp_events").insert(row).execute()
+        sb.table("mcp_events").insert(row, returning=ReturnMethod.minimal).execute()  # anon has no SELECT policy; RETURNING would fail RLS
     except Exception as exc:  # logging must never affect the tool response
         logger.warning(f"mcp_events insert failed: {exc}")
 
