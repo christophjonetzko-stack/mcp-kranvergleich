@@ -582,22 +582,47 @@ async def health(request):
     })
 
 
+async def server_card(request):
+    """Static MCP server card so registries (Smithery) can list tools without
+    a live scan. Same tool definitions as list_tools()."""
+    tools = await list_tools()
+    return JSONResponse({
+        "serverInfo": {"name": "kranvergleich", "version": "1.1.0"},
+        "authentication": {"required": False},
+        "transport": {"type": "streamable-http", "url": "/mcp"},
+        "tools": [{"name": t.name, "description": t.description, "inputSchema": t.inputSchema} for t in tools],
+        "resources": [],
+        "prompts": [],
+    })
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app):
     async with session_manager.run():
         yield
 
 
-app = Starlette(
+starlette_app = Starlette(
     debug=False,
     routes=[
         Route("/health", health),
+        Route("/.well-known/mcp/server-card.json", server_card),
         Route("/sse", handle_sse),
         Mount("/messages", app=sse.handle_post_message),
-        Mount("/mcp", app=handle_streamable_http),
     ],
     lifespan=lifespan,
 )
+
+
+async def app(scope, receive, send):
+    """Top-level ASGI app. /mcp goes straight to the Streamable HTTP session
+    manager: a Starlette Mount("/mcp") answers `POST /mcp` with 307 -> /mcp/,
+    which registry scanners (Smithery, Cloudflare Workers fetch) do not
+    follow, so they reported 502. Everything else is Starlette."""
+    if scope["type"] == "http" and scope["path"] in ("/mcp", "/mcp/"):
+        await session_manager.handle_request(scope, receive, send)
+        return
+    await starlette_app(scope, receive, send)
 
 if __name__ == "__main__":
     logger.info(f"Starting KranVergleich MCP server on port {PORT} (SSE /sse, Streamable HTTP /mcp)")
